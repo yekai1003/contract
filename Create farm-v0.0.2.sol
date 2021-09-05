@@ -559,13 +559,16 @@ contract LPTokenWrapper {
 contract Farm is LPTokenWrapper, IRewardDistributionRecipient {
     IERC20 public outCoin;
 
-    uint256 public constant DURATION = 2 days;
+    uint256 public constant DURATION = 10 days;
 
     uint256 public startTime;
     uint256 public periodFinish = 0;
     uint256 public rewardRate = 0;
     uint256 public lastUpdateTime;
     uint256 public rewardPerTokenStored;
+    uint256 constant l1Reward = 20;
+    uint256 constant l2Reward = 5;
+    address public genesisMiner ;
     mapping(address => uint256) public userRewardPerTokenPaid;
     mapping(address => uint256) public rewards;
     struct ReferralAddr {
@@ -603,10 +606,11 @@ contract Farm is LPTokenWrapper, IRewardDistributionRecipient {
         _;
     }
 
-    constructor(IERC20 _inCoin, IERC20 _outCoin, uint256 _startTime) public {
+    constructor(IERC20 _inCoin, IERC20 _outCoin, uint256 _startTime, address _miner) public {
         inCoin = _inCoin;
         outCoin = _outCoin;
         startTime = _startTime;
+        genesisMiner = _miner;
     }
 
     /// 更改引荐人关系
@@ -614,7 +618,7 @@ contract Farm is LPTokenWrapper, IRewardDistributionRecipient {
         if (referrer == user) {// referrer cannot be user himself/herself
             return;
         }
-
+        require(balanceOf(referrer) > 0 || referrer == genesisMiner, "user Doesn't deposit");
         if (referrer == address(0)) {// Cannot be address 0
             return;
         }
@@ -635,14 +639,14 @@ contract Farm is LPTokenWrapper, IRewardDistributionRecipient {
 
     //查询推荐人奖励
     function getReferralRewards(address account) public view returns (uint256) {
-        uint256 availableReferralRewards = getLevelReferralRewards(account, 30, 50, true);
+        uint256 availableReferralRewards = getLevelReferralRewards(account, l1Reward, l2Reward, true);
 
         availableReferralRewards = availableReferralRewards.add(frozenReferralRewards[account]);
         availableReferralRewards = availableReferralRewards.sub(referralRewardsWithdraw[account]);
         return availableReferralRewards;
     }
 
-  function getLevelReferralRewards(address account, uint256 rate1, uint256 rate2, bool isContinue) public view returns (uint256) {
+  function getLevelReferralRewards(address account, uint256 rate1, uint256 rate2, bool isContinue) internal view returns (uint256) {
         uint256 availableReferralRewards = 0;
         uint256 rate = rate1;
         if(!isContinue) {
@@ -737,12 +741,12 @@ contract Farm is LPTokenWrapper, IRewardDistributionRecipient {
 
             if(alreadyReferraled[msg.sender] != address(0)) {
                address referrer = alreadyReferraled[msg.sender];
-               uint256 referrerFee = reward.mul(30).div(100);
+               uint256 referrerFee = reward.mul(l1Reward).div(100);
                frozenReferralRewards[referrer] = frozenReferralRewards[referrer].add(referrerFee);
                // 还有间接引荐人
                if(alreadyReferraled[referrer] != address(0) ) {
                   address referrer2 = alreadyReferraled[referrer];
-                  uint256 referrerFee2 = reward.mul(50).div(100);
+                  uint256 referrerFee2 = reward.mul(l2Reward).div(100);
                   frozenReferralRewards[referrer2] = frozenReferralRewards[referrer2].add(referrerFee2);
                }
             }
@@ -777,9 +781,57 @@ contract Farm is LPTokenWrapper, IRewardDistributionRecipient {
 
             poolInfo.startTime = startTime;
             poolInfo.finishTime = periodFinish;
-            poolInfo.totalReward = reward.add(reward.mul(30).div(100)).add(reward.mul(50).div(100));
+            poolInfo.totalReward = reward.add(reward.mul(l1Reward).div(100)).add(reward.mul(l2Reward).div(100));
             poolInfo.rewardRate = rewardRate;
         }
         emit RewardAdded(reward);
     }
+    
+    /// 获取推荐用户质押量
+    function getRecommendLp(address who) internal view returns(uint256) {
+        uint256 l1RecommendAmount = 0;
+        for(uint256 i = 0; i < referralRelationships[who].length; i ++) {
+            address sonaddr = referralRelationships[who][i].addr;
+            l1RecommendAmount = l1RecommendAmount.add(balanceOf(sonaddr));
+        }
+        return l1RecommendAmount;
+    }
+
+    /*
+        获取推广信息：
+        参数：用户地址,页码
+        返回值：一级推广列表，间推人数列表，团队质押数量列表, count, total
+    */
+    function getRecommend(address who, uint8 page) external view returns(address[10] memory , uint256[10] memory, uint256[10] memory, uint256, uint256) {
+        uint256 total = referralRelationships[who].length;
+        uint256[10] memory l2Count ;
+        uint256[10] memory groupAmount ;
+        address[10] memory userlist;
+        uint256 ibegin = page * 10;
+        uint256 iend   = (page+1) * 10 ;
+        uint256 lAmount = 0;
+        address who1 = who;
+        if(total < iend) {
+            iend = total;
+        }
+        for(uint256 i = ibegin; i < iend; i ++ ) {
+            address son = referralRelationships[who1][i].addr;
+            userlist[i] = son;
+            l2Count[i] = referralRelationships[son].length;
+            lAmount = getRecommendLp(son);
+            groupAmount[i] = lAmount.add(balanceOf(son));
+            
+        }
+
+        return (userlist, l2Count, groupAmount, iend - ibegin, total);
+    }
+    
+    function afterMint() external onlyRewardDistribution {
+        require(block.timestamp >= periodFinish, "the lp mined not over");
+        uint256 amount = outCoin.balanceOf(address(this));
+        if(amount > 0) {
+            outCoin.safeTransfer(msg.sender, amount);
+        }
+    }
+    
 }
